@@ -1,11 +1,14 @@
 from .istftnet import Decoder
 from .modules import CustomAlbert, ProsodyPredictor, TextEncoder
+from .hf_utils import get_checkpoints_dir, resolve_model_path, load_custom_model
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
 from loguru import logger
 from transformers import AlbertConfig
 from typing import Dict, Optional, Union
+from pathlib import Path
 import json
+import os
 import torch
 
 class KModel(torch.nn.Module):
@@ -33,17 +36,28 @@ class KModel(torch.nn.Module):
         repo_id: Optional[str] = None,
         config: Union[Dict, str, None] = None,
         model: Optional[str] = None,
-        disable_complex: bool = False
+        disable_complex: bool = False,
+        checkpoint_dir: Optional[Union[str, Path]] = None,
     ):
         super().__init__()
         if repo_id is None:
             repo_id = 'hexgrad/Kokoro-82M'
             print(f"WARNING: Defaulting repo_id to {repo_id}. Pass repo_id='{repo_id}' to suppress this warning.")
         self.repo_id = repo_id
+        self.checkpoint_dir = Path(checkpoint_dir).resolve() if checkpoint_dir else get_checkpoints_dir()
         if not isinstance(config, dict):
             if not config:
-                logger.debug("No config provided, downloading from HF")
-                config = hf_hub_download(repo_id=repo_id, filename='config.json')
+                config_path = resolve_model_path(repo_id=repo_id, filename='config.json', base_dir=self.checkpoint_dir, must_exist=True)
+                if config_path and os.path.exists(config_path):
+                    logger.debug(f"Loading local config from {config_path}")
+                    config = str(config_path)
+                else:
+                    logger.debug("No config provided, downloading from HF")
+                    config = load_custom_model(repo_id=repo_id, filename='config.json', base_dir=self.checkpoint_dir, loader="path")
+            elif isinstance(config, (str, Path)) and not os.path.exists(config):
+                resolved_config = resolve_model_path(repo_id=repo_id, filename=str(config), base_dir=self.checkpoint_dir, must_exist=True)
+                if resolved_config and os.path.exists(resolved_config):
+                    config = str(resolved_config)
             with open(config, 'r', encoding='utf-8') as r:
                 config = json.load(r)
                 logger.debug(f"Loaded config: {config}")
@@ -64,7 +78,18 @@ class KModel(torch.nn.Module):
             dim_out=config['n_mels'], disable_complex=disable_complex, **config['istftnet']
         )
         if not model:
-            model = hf_hub_download(repo_id=repo_id, filename=KModel.MODEL_NAMES[repo_id])
+            model_filename = KModel.MODEL_NAMES.get(repo_id, 'kokoro-v1_0.pth')
+            model_path = resolve_model_path(repo_id=repo_id, filename=model_filename, base_dir=self.checkpoint_dir, must_exist=True)
+            if model_path and os.path.exists(model_path):
+                logger.debug(f"Loading local model checkpoint from {model_path}")
+                model = str(model_path)
+            else:
+                logger.debug(f"Model checkpoint not found locally, downloading from HF: {model_filename}")
+                model = load_custom_model(repo_id=repo_id, filename=model_filename, base_dir=self.checkpoint_dir, loader="path")
+        elif isinstance(model, (str, Path)) and not os.path.exists(model):
+            resolved_model = resolve_model_path(repo_id=repo_id, filename=str(model), base_dir=self.checkpoint_dir, must_exist=True)
+            if resolved_model and os.path.exists(resolved_model):
+                model = str(resolved_model)
         for key, state_dict in torch.load(model, map_location='cpu', weights_only=True).items():
             assert hasattr(self, key), key
             try:

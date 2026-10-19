@@ -13,16 +13,19 @@ espeak not installed: `apt-get install espeak-ng`
 """
 
 import argparse
+import os
 import wave
 from pathlib import Path
-from typing import Generator, TYPE_CHECKING
+from typing import Generator, Optional, TYPE_CHECKING, Union
 
 import numpy as np
 from loguru import logger
+from .hf_utils import set_checkpoints_dir
 
 languages = [
     "a",  # American English
     "b",  # British English
+    "d",  # German
     "h",  # Hindi
     "e",  # Spanish
     "f",  # French
@@ -37,18 +40,27 @@ if TYPE_CHECKING:
 
 
 def generate_audio(
-    text: str, kokoro_language: str, voice: str, speed=1
+    text: str,
+    kokoro_language: str,
+    voice: str,
+    speed: float = 1,
+    checkpoint_dir: Optional[Union[str, Path]] = None,
 ) -> Generator["KPipeline.Result", None, None]:
     from kokoro import KPipeline
 
     if not voice.startswith(kokoro_language):
         logger.warning(f"Voice {voice} is not made for language {kokoro_language}")
-    pipeline = KPipeline(lang_code=kokoro_language)
+    pipeline = KPipeline(lang_code=kokoro_language, checkpoint_dir=checkpoint_dir)
     yield from pipeline(text, voice=voice, speed=speed, split_pattern=r"\n+")
 
 
 def generate_and_save_audio(
-    output_file: Path, text: str, kokoro_language: str, voice: str, speed=1
+    output_file: Path,
+    text: str,
+    kokoro_language: str,
+    voice: str,
+    speed: float = 1,
+    checkpoint_dir: Optional[Union[str, Path]] = None,
 ) -> None:
     with wave.open(str(output_file.resolve()), "wb") as wav_file:
         wav_file.setnchannels(1)  # Mono audio
@@ -56,7 +68,11 @@ def generate_and_save_audio(
         wav_file.setframerate(24000)  # Sample rate
 
         for result in generate_audio(
-            text, kokoro_language=kokoro_language, voice=voice, speed=speed
+            text,
+            kokoro_language=kokoro_language,
+            voice=voice,
+            speed=speed,
+            checkpoint_dir=checkpoint_dir,
         ):
             logger.debug(result.phonemes)
             if result.audio is None:
@@ -66,7 +82,14 @@ def generate_and_save_audio(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Kokoro TTS CLI")
+    parser.add_argument(
+        "--checkpoint-dir",
+        "--checkpoint_dir",
+        type=Path,
+        default=os.getenv("CHECKPOINT_DIR", "checkpoints"),
+        help="Path to checkpoint directory (default: 'checkpoints' or $CHECKPOINT_DIR)",
+    )
     parser.add_argument(
         "-m",
         "--voice",
@@ -130,6 +153,8 @@ def main() -> None:
         print("Press Ctrl+D to stop reading input and start generating", flush=True)
         text = '\n'.join(sys.stdin)
 
+    checkpoint_dir = Path(args.checkpoint_dir)
+    set_checkpoints_dir(checkpoint_dir)
     logger.debug(f"Input text: {text!r}")
 
     out_file: Path = args.output_file
@@ -141,6 +166,7 @@ def main() -> None:
         kokoro_language=lang,
         voice=args.voice,
         speed=args.speed,
+        checkpoint_dir=checkpoint_dir,
     )
 
 

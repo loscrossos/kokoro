@@ -1,13 +1,27 @@
+import argparse
 import spaces
 from kokoro import KModel, KPipeline
+from kokoro.hf_utils import set_checkpoints_dir
 import gradio as gr
 import os
 import random
 import torch
 
+parser = argparse.ArgumentParser(description="Kokoro TTS Gradio Demo")
+parser.add_argument(
+    "--checkpoint-dir",
+    "--checkpoint_dir",
+    type=str,
+    default=os.getenv("CHECKPOINT_DIR", "checkpoints"),
+    help="Path to checkpoint directory (default: 'checkpoints' or $CHECKPOINT_DIR)",
+)
+args, _ = parser.parse_known_args()
+checkpoint_dir = args.checkpoint_dir
+set_checkpoints_dir(checkpoint_dir)
+
 CUDA_AVAILABLE = torch.cuda.is_available()
-models = {gpu: KModel().to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
-pipelines = {lang_code: KPipeline(lang_code=lang_code, model=False) for lang_code in 'ab'}
+models = {gpu: KModel(checkpoint_dir=checkpoint_dir).to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
+pipelines = {lang_code: KPipeline(lang_code=lang_code, model=False, checkpoint_dir=checkpoint_dir) for lang_code in 'ab'}
 pipelines['a'].g2p.lexicon.golds['kokoro'] = 'kˈOkəɹO'
 pipelines['b'].g2p.lexicon.golds['kokoro'] = 'kˈQkəɹQ'
 

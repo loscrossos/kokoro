@@ -1,9 +1,19 @@
-from .model import KModel
+from __future__ import annotations
+try:
+    from .model import KModel
+except ImportError:
+    KModel = None
+from .hf_utils import get_checkpoints_dir, resolve_model_path, load_custom_model
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("kokoro.pipeline")
 from misaki import en, espeak
 from typing import Callable, Generator, List, Optional, Tuple, Union
+from pathlib import Path
 import re
 import torch
 import os
@@ -11,6 +21,7 @@ import os
 ALIASES = {
     'en-us': 'a',
     'en-gb': 'b',
+    'de': 'd',
     'es': 'e',
     'fr-fr': 'f',
     'hi': 'h',
@@ -26,6 +37,7 @@ LANG_CODES = dict(
     b='British English',
 
     # espeak-ng
+    d='de',
     e='es',
     f='fr-fr',
     h='hi',
@@ -68,7 +80,8 @@ class KPipeline:
         model: Union[KModel, bool] = True,
         trf: bool = False,
         en_callable: Optional[Callable[[str], str]] = None,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        checkpoint_dir: Optional[Union[str, Path]] = None,
     ):
         """Initialize a KPipeline.
         
@@ -79,19 +92,24 @@ class KPipeline:
             device: Override default device selection ('cuda' or 'cpu', or None for auto)
                    If None, will auto-select cuda if available
                    If 'cuda' and not available, will explicitly raise an error
+            checkpoint_dir: Override default directory for checkpoints and voices
         """
         if repo_id is None:
             repo_id = 'hexgrad/Kokoro-82M'
             print(f"WARNING: Defaulting repo_id to {repo_id}. Pass repo_id='{repo_id}' to suppress this warning.")
         self.repo_id = repo_id
+        self.checkpoint_dir = Path(checkpoint_dir).resolve() if checkpoint_dir else get_checkpoints_dir()
         lang_code = lang_code.lower()
         lang_code = ALIASES.get(lang_code, lang_code)
         assert lang_code in LANG_CODES, (lang_code, LANG_CODES)
         self.lang_code = lang_code
         self.model = None
-        if isinstance(model, KModel):
+        global KModel
+        if KModel is not None and isinstance(model, KModel):
             self.model = model
         elif model:
+            if KModel is None:
+                from .model import KModel
             if device == 'cuda' and not torch.cuda.is_available():
                 raise RuntimeError("CUDA requested but not available")
             if device == 'mps' and not torch.backends.mps.is_available():
@@ -106,7 +124,7 @@ class KPipeline:
                 else:
                     device = 'cpu'
             try:
-                self.model = KModel(repo_id=repo_id).to(device).eval()
+                self.model = KModel(repo_id=repo_id, checkpoint_dir=self.checkpoint_dir).to(device).eval()
             except RuntimeError as e:
                 if device == 'cuda':
                     raise RuntimeError(f"""Failed to initialize model on CUDA: {e}. 
@@ -146,15 +164,49 @@ class KPipeline:
     def load_single_voice(self, voice: str):
         if voice in self.voices:
             return self.voices[voice]
+            
         if voice.endswith('.pt'):
-            f = voice
+            if os.path.isfile(voice):
+                f = voice
+            else:
+                resolved = resolve_model_path(repo_id=self.repo_id, filename=voice, base_dir=self.checkpoint_dir, must_exist=True)
+                if not resolved and self.lang_code == 'd':
+                    resolved = resolve_model_path(repo_id='cryptomilk/kokoro-german-kerstin', filename=voice, base_dir=self.checkpoint_dir, must_exist=True)
+                if resolved and os.path.exists(resolved):
+                    f = str(resolved)
+                else:
+                    if self.lang_code == 'd':
+                        raise RuntimeError(f"German voice tensor '{voice}' not found locally. Please download a community German voice checkpoint (e.g., from Hugging Face) into your voices directory or specify a custom voice path.")
+                    raise FileNotFoundError(f"Voice tensor '{voice}' not found locally.")
         else:
-            f = hf_hub_download(repo_id=self.repo_id, filename=f'voices/{voice}.pt')
-            if not voice.startswith(self.lang_code):
-                v = LANG_CODES.get(voice, voice)
-                p = LANG_CODES.get(self.lang_code, self.lang_code)
-                logger.warning(f'Language mismatch, loading {v} voice into {p} pipeline.')
-        pack = torch.load(f, weights_only=True)
+            voice_filename = f'voices/{voice}.pt'
+            resolved = resolve_model_path(repo_id=self.repo_id, filename=voice_filename, base_dir=self.checkpoint_dir, must_exist=True)
+            if not resolved and self.lang_code == 'd':
+                resolved = resolve_model_path(repo_id='cryptomilk/kokoro-german-kerstin', filename=voice_filename, base_dir=self.checkpoint_dir, must_exist=True)
+                
+            if resolved and os.path.exists(resolved):
+                logger.debug(f"Loading local voice from {resolved}")
+                f = str(resolved)
+            else:
+                logger.debug(f"Voice not found locally, downloading from HF: {voice_filename}")
+                try:
+                    f = load_custom_model(repo_id=self.repo_id, filename=voice_filename, base_dir=self.checkpoint_dir, loader="path")
+                except Exception as e:
+                    if self.lang_code == 'd':
+                        logger.warning(f"Voice '{voice}' not found in {self.repo_id}. Attempting community fallback...")
+                        try:
+                            f = load_custom_model(repo_id='cryptomilk/kokoro-german-kerstin', filename=voice_filename, base_dir=self.checkpoint_dir, loader="path")
+                        except Exception:
+                            raise RuntimeError(f"German voice tensor '{voice}' not found locally. Please download a community German voice checkpoint (e.g., from Hugging Face) into your voices directory or specify a custom voice path.")
+                    else:
+                        raise e
+                
+        if not voice.endswith('.pt') and not voice.startswith(self.lang_code):
+            v = LANG_CODES.get(voice, voice)
+            p = LANG_CODES.get(self.lang_code, self.lang_code)
+            logger.warning(f'Language mismatch, loading {v} voice into {p} pipeline.')
+            
+        pack = torch.load(f, map_location='cpu', weights_only=True)
         self.voices[voice] = pack
         return pack
 

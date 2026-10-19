@@ -18,9 +18,9 @@ def save_audio(audio: torch.Tensor, filename: str):
     else:
         print("No audio was generated")
 
-def main():
+def main(checkpoint_dir=None):
     # Initialize pipeline with American English
-    pipeline = KPipeline(lang_code='a')
+    pipeline = KPipeline(lang_code='a', checkpoint_dir=checkpoint_dir)
     
     # The phoneme string for:
     # "How are you today? I am doing reasonably well, thank you for asking"
@@ -59,4 +59,18 @@ def main():
         print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    import os
+    from kokoro.hf_utils import set_checkpoints_dir
+
+    parser = argparse.ArgumentParser(description="Kokoro Phoneme Example")
+    parser.add_argument(
+        "--checkpoint-dir",
+        "--checkpoint_dir",
+        type=str,
+        default=os.getenv("CHECKPOINT_DIR", "checkpoints"),
+        help="Path to checkpoint directory (default: 'checkpoints' or $CHECKPOINT_DIR)",
+    )
+    args = parser.parse_args()
+    set_checkpoints_dir(args.checkpoint_dir)
+    main(checkpoint_dir=args.checkpoint_dir)

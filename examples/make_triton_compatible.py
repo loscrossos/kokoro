@@ -45,11 +45,32 @@ def add_squeeze(graph, speed_input, speed_unsqueezed):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python make_triton_compatible.py <onnx_model_path>")
-        sys.exit(1)
+    import argparse
+    import os
+    from kokoro.hf_utils import set_checkpoints_dir
 
-    onnx_model_path = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Make ONNX model compatible with Triton")
+    parser.add_argument("onnx_model_path", nargs="?", default=None, help="Path to input ONNX model")
+    parser.add_argument(
+        "--checkpoint-dir",
+        "--checkpoint_dir",
+        type=str,
+        default=os.getenv("CHECKPOINT_DIR", "checkpoints"),
+        help="Path to checkpoint directory (default: 'checkpoints' or $CHECKPOINT_DIR)",
+    )
+    args = parser.parse_args()
+    set_checkpoints_dir(args.checkpoint_dir)
+
+    if not args.onnx_model_path:
+        candidate = os.path.join(args.checkpoint_dir, "onnx", "kokoro.onnx")
+        if os.path.exists(candidate):
+            args.onnx_model_path = candidate
+        elif os.path.exists("onnx/kokoro.onnx"):
+            args.onnx_model_path = "onnx/kokoro.onnx"
+        else:
+            parser.error("Usage: python make_triton_compatible.py <onnx_model_path>")
+
+    onnx_model_path = args.onnx_model_path
     onnx_model = onnx.load(onnx_model_path)
     onnx.checker.check_model(onnx_model)
     print("Model is valid")
